@@ -52,11 +52,11 @@
 //! we can move out the raw data from this wrapper:
 //!
 //! ```rust
-//! use owned_pin::{OPin, opin};
+//! use owned_pin::{OPin, opin, unpin};
 //!
 //! fn take_the_ownership_of(pointer: OPin<String>) {
 //!     // Wow! the unpinned ownership is now ours!
-//!     let string: String = OPin::unpin(pointer);
+//!     let string: String = unpin(pointer);
 //!     println!("{string}");
 //! }
 //!
