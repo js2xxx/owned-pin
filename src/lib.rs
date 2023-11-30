@@ -99,6 +99,7 @@ pub use core::{marker::PhantomData, mem::ManuallyDrop};
 use core::{
     mem::{self},
     ops::{Deref, DerefMut},
+    panic::{RefUnwindSafe, UnwindSafe},
     pin::Pin,
     ptr,
 };
@@ -138,6 +139,28 @@ where
     #[doc(hidden)]
     // Add a tuple element of `T` to inform the dropck of owning the value.
     pub marker: PhantomData<(&'a mut T, T)>,
+}
+
+// The wrapper itself should be `Unpin` if the underlying pointer is `Unpin`.
+impl<'a, T, P> Unpin for OPin<'a, T, P>
+where
+    T: ?Sized,
+    P: DerefOPin<'a, T> + Unpin,
+{
+}
+
+impl<'a, T, P> UnwindSafe for OPin<'a, T, P>
+where
+    T: ?Sized,
+    P: DerefOPin<'a, T> + UnwindSafe,
+{
+}
+
+impl<'a, T, P> RefUnwindSafe for OPin<'a, T, P>
+where
+    T: ?Sized,
+    P: DerefOPin<'a, T> + RefUnwindSafe,
+{
 }
 
 impl<'a, T, P> OPin<'a, T, P>
