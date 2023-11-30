@@ -1,6 +1,6 @@
 # Owned Pin
 
-This crate deals with data which is owned by some entity but (maybe) immovable in memory. It is inspired by R-value references in C++.
+This crate deals with data that is owned by some entity but (maybe) immovable in memory. It is inspired by R-value references in C++.
 
 See [the documentation](https://docs.rs/owned-pin/) for more information.
 
@@ -22,7 +22,7 @@ try_to_take_the_ownership_of(value.as_mut());
 try_to_take_the_ownership_of(value.as_mut());
 ```
 
-But with the [`OPin<T, P>`] wrapper, which both "own" and "pin" the data in the memory, enabling the example above to work as desired:
+But the [`OPin<T, P>`] wrapper, which both "own" and "pin" the data in the memory, enables the example above to work as desired:
 
 ```rust,compile_fail
 use owned_pin::{OPin, opin};
