@@ -1,10 +1,10 @@
-Owned Pin
+# Owned Pin
 
-This crate deals with data which is owned by some entity but (maybe) immovable in memory.
+This crate deals with data which is owned by some entity but (maybe) immovable in memory. It is inspired by R-value references in C++.
 
 See [the documentation](https://docs.rs/owned-pin/) for more information.
 
-# Examples
+## Examples
 
 With `Pin<P>` only, we cannot guarantee the move semantics of the value.
 
@@ -36,4 +36,15 @@ take_the_ownership_of(value);
 // ... so the value itself cannot be used again.
 // The line below causes rustc to emit `E0382`.
 // take_the_ownership_of(value);
+```
+
+With data that implements `Unpin`, we can even move it out from the wrapper safe and sound:
+
+```rust
+use owned_pin::{opin, unpin};
+
+// Pins the value onto the stack.
+let pinned = opin!(String::from("Hello!"));
+// Retrieves back the data because `String` is `Unpin`.
+let string = unpin(pinned);
 ```

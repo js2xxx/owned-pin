@@ -1,10 +1,17 @@
 [package]
-name = "owned-pin"
-version = "0.1.0"
+authors = ["Js2xxx <akucxy@163.com>"]
 edition = "2021"
+license = "MIT OR Apache-2.0"
+name = "owned-pin"
+readme = "README.md"
+version = "0.1.0"
+
+description = "A wrapper that both owns and pins data in memory"
+
+categories = ["data-structures", "memory-management"]
+keywords = ["owned", "pin", "move", "rvalue"]
+repository = "https://github.com/js2xxx/owned-pin"
 
 [features]
 alloc = []
 default = ["alloc"]
-
-[dependencies]
