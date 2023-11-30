@@ -1,5 +1,9 @@
 # Owned Pin
 
+[![Cargo](https://img.shields.io/crates/v/owned-pin.svg)](https://crates.io/crates/owned-pin)
+[![Documentation](https://docs.rs/owned-pin/badge.svg)](https://docs.rs/owned-pin)
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](https://github.com/js2xxx/owned-pin)
+
 This crate deals with data that is owned by some entity but (maybe) immovable in memory. It is inspired by R-value references in C++.
 
 See [the documentation](https://docs.rs/owned-pin/) for more information.
@@ -51,3 +55,7 @@ let pinned = opin!(String::from("Hello!"));
 // Retrieves back the data because `String` is `Unpin`.
 let string: String = unpin(pinned);
 ```
+
+## License
+
+MIT OR Apache-2.0
