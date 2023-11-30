@@ -23,6 +23,8 @@ use crate::IntoInner;
 /// This object behaves just like `Box<T>`, aside from the fact that its pointed
 /// value is stored somewhere else on the stack, while the storage place itself
 /// is directly unreachable.
+///
+/// See [`the module level documentation`](crate) for more information.
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct OnStack<'a, T: ?Sized> {
@@ -63,6 +65,8 @@ impl<'a, T: ?Sized> Unpin for OnStack<'a, T> {}
 impl<'a, T: ?Sized> OnStack<'a, T> {
     /// Constructs an owned reference to somewhere on the stack.
     ///
+    /// For safe construction methods, see [`on_stack`](crate::on_stack).
+    ///
     /// # Safety
     ///
     /// `inner` must own its referent, a.k.a. not being (in)directly reborrowed
@@ -77,7 +81,7 @@ impl<'a, T: ?Sized> OnStack<'a, T> {
     /// Consumes the `OnStack` pointer, returning a wrapped raw pointer, which
     /// will be properly aligned and non-null.
     ///
-    /// This function behaves just like [`Box::into_raw`], aside from the fact
+    /// This function behaves just like `Box::into_raw`, aside from the fact
     /// that the pointer's lifetime is discarded as well.
     pub fn into_raw(pointer: Self) -> *mut T {
         OnStack::leak(pointer)
@@ -92,12 +96,15 @@ impl<'a, T: ?Sized> OnStack<'a, T> {
     /// the satisfaction of creating a unique & valid reference from this
     /// pointer.
     pub unsafe fn from_raw(pointer: *mut T) -> Self {
+        // SAFETY: The contract is satisfied above.
         unsafe { OnStack::new_unchecked(&mut *(pointer as *mut ManuallyDrop<T>)) }
     }
 
     /// Converts a `OnStack<T>` into a `Pin<OnStack<T>>`. If `T` does not
     /// implement Unpin, then `*pointer` will be pinned in memory and unable
     /// to be moved.
+    ///
+    /// See [`opin`](crate::opin) for methods that directly pin values.
     pub fn into_pin(pointer: Self) -> Pin<OnStack<'a, T>> {
         // It's not possible to move or replace the insides of a `Pin<OnStack<T>>`
         // when `T: !Unpin`, so it's safe to pin it directly without any additional
@@ -108,10 +115,10 @@ impl<'a, T: ?Sized> OnStack<'a, T> {
     /// Consumes and leaks the `OnStack` pointer, returning a mutable reference,
     /// `&'a mut T`.
     ///
-    /// Unlike [`Box::leak`], this function cannot chose its own lifetime,
+    /// Unlike `Box::leak`, this function cannot chose its own lifetime,
     /// because the pointer itself is constrained by a certain lifetime.
     ///
-    /// Like [`Box::leak`], the destructor of the value will not be run.
+    /// Like `Box::leak`, the destructor of the value will not be run.
     pub fn leak(pointer: Self) -> &'a mut T {
         unsafe {
             let ret = ptr::read(&pointer.inner);

@@ -99,7 +99,11 @@
 mod pointer;
 
 #[doc(hidden)]
-pub use core::{marker::PhantomData, mem::ManuallyDrop, pin::Pin};
+pub use core::{
+    marker::PhantomData,
+    mem::{ManuallyDrop, MaybeUninit},
+    pin::Pin,
+};
 use core::{ops::Deref, sync::Exclusive};
 
 pub use self::pointer::OnStack;
@@ -171,10 +175,77 @@ mod alloc2 {
     }
 }
 
+/// Constructs a smart pointer [on the current calling stack](OnStack) from the
+/// value.
+///
+/// Unlike other pointers like `Box<T>`, this returned pointer consumes no
+/// additional memory on the heap, at the cost of restricted lifetime of the
+/// current calling context.
+///
+/// This pointer serves no additional functionality, unless used with [`Pin`].
+///
+/// # Examples
+///
+/// ```rust
+/// // Basic usage
+/// use owned_pin::{on_stack, IntoInner};
+///
+/// let pointer = on_stack!(String::from("Hello!"));
+/// let string = IntoInner::into_inner(pointer);
+/// assert_eq!(string, "Hello!");
+/// ```
+///
+/// ```rust
+/// // Pinning the pointer
+/// use owned_pin::{on_stack, OnStack};
+///
+/// let pointer = on_stack!(String::from("Hello!"));
+/// let pinned = OnStack::into_pin(pointer);
+/// // Use this pinned pointer while keeping the semantic ownership.
+/// ```
+#[macro_export]
+macro_rules! on_stack {
+    ($value:expr) => {
+        $crate::OnStack {
+            inner: &mut $crate::ManuallyDrop::new($value),
+            marker: $crate::PhantomData,
+        }
+    };
+}
+
+/// Constructs an uninitialized smart pointer [on the current calling
+/// stack](OnStack).
+///
+/// This macro is the shorthand for
+/// [`on_stack!(MaybeUninit::uninit())`](on_stack); users can specify the
+/// desired type in the argument of this macro.
+///
+/// The user can later write this pointer with a value to obtain the initialized
+/// result.
+///
+/// # Examples
+///
+/// ```rust
+/// use owned_pin::{uninit_on_stack, OnStack};
+///
+/// let uninit = uninit_on_stack!(String);
+/// let pointer = OnStack::write(uninit, "Hello!".into());
+/// assert_eq!(*pointer, "Hello!");
+/// ```
+#[macro_export]
+macro_rules! uninit_on_stack {
+    ($ty:ty) => {
+        $crate::on_stack!($crate::MaybeUninit::<$ty>::uninit())
+    };
+    () => {
+        $crate::on_stack!($crate::MaybeUninit::uninit())
+    };
+}
+
 /// Pins a value onto the current calling stack.
 ///
-/// If the value is `Unpin`, the user can safety [move out](OPin::unpin) the
-/// value and use it again.
+/// If the value is `Unpin`, the user can safety [move out](unpin) the value and
+/// use it again.
 ///
 /// # Examples
 ///
