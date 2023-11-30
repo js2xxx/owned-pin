@@ -23,13 +23,18 @@
 //! moving the ownership of the data. However, this remedy significantly
 //! increases the difficulty of maintaining the code.
 //!
-//! Thus, we introduce the [`OPin<T, P>`] wrapper, which both "own" and
-//! "pin" the data in the memory, enabling the example above to work as desired:
+//! In practice, this is because there is no such smart pointer that owns data
+//! by holding a unique reference to some other location on the stack.
+//!
+//! Thus, we introduce the [`OnStack<T>`] smart pointer, which does the work
+//! mentioned above in a memory-safe way, and a type alias [`OPin<T>`] =
+//! `Pin<OnStack<T>>`, which both enable the example above to work as desired:
 //!
 //! ```rust,compile_fail
 //! use owned_pin::{OPin, opin};
 //! use core::marker::PhantomPinned;
 //!
+//! // `OPin<'a, T>` equals to `Pin<OnStack<'a, T>>`.
 //! fn take_the_ownership_of<T>(owned_and_pinned: OPin<T>) {}
 //!
 //! let value = opin!(PhantomPinned);
@@ -42,9 +47,9 @@
 //!
 //! # `Unpin`
 //!
-//! `OPin<T, P>`'s moving semantics provides it with more functionality than
-//! `Pin<P>`. For example, owning an `Unpin`ned data means we can move out the
-//! raw data from this wrapper:
+//! `Pin<OnStack<T>>`'s moving semantics provides it with more functionality
+//! than an ordinary `Pin<&mut T>`. For example, owning an `Unpin`ned data means
+//! we can move out the raw data from this wrapper:
 //!
 //! ```rust
 //! use owned_pin::{OPin, opin};
@@ -60,230 +65,113 @@
 //!
 //! This magic works safe and sound thanks to the full potential of
 //! [`ManuallyDrop`], implying that the wrapped pointer actually points to a
-//! `ManuallyDrop<T>`. This means if users want to provide their own pointer,
-//! the resulting type signature would be something lengthy like `OPin<'static,
-//! T, Box<ManuallyDrop<T>>>`.
+//! `ManuallyDrop<T>`.
 //!
-//! This is sadly compulsory by far, due to the little support of generic type
-//! constructors in Rust (while generic associated types can achieve this by
-//! defining a type family trait, the implementors of custom pointers should
-//! also implement that trait, which is unwilling for them to depend on this
-//! crate just for this sake).
+//! Note that `Pin<Box<T>>` does all the things above as good as `OPin<T>`, and
+//! the former can even be `'static` if `T` is `'static`. Nevertheless,
+//! additional heap memory is consumed the achieve the result, which is
+//! unrecommendable in memory-constraint scenarios.
 //!
 //! # Relationship with R-value references in C++
 //!
-//! This crate is in fact inspired by R-value references in C++, and `OPin<T,
-//! P>` behaves more similar to R-value references than the original move
-//! semantics in Rust and the `Pin<P>` wrapper. However, there is still no
-//! "default value" left when some data is `OPin`ned or moved out, guaranteeing
-//! the memory safety requirements of Rust.
+//! This crate is in fact inspired by R-value references in C++, and `OPin<T>`
+//! behaves more similar to R-value references than the original move semantics
+//! in Rust and the `Pin<&mut T>` wrapper. However, there is still no "default
+//! value" left when some data is `OPin`ned or moved out, guaranteeing the
+//! memory safety requirements of Rust.
 //!
 //! The more detailed comparison is yet to be discussed.
-//!
-//! # Third-party utilities
-//!
-//! So far, all the third-party crates that provide utilities of pinned data,
-//! such as [`pin-project`](https://crates.io/crates/pin-project), have been
-//! focused only on the `Pin<P>` wrapper, with which the
-//! [`as_mut`](OPin::as_mut) method of every `OPin` can safely provide. Hence,
-//! users of `OPin`s can integrate this crate with such utilities trivially.
 #![no_std]
 #![allow(internal_features)]
 #![feature(allocator_api)]
-#![feature(allow_internal_unsafe)]
-#[cfg(feature = "alloc")]
-mod boxed;
+#![feature(allow_internal_unstable)]
+#![feature(coerce_unsized)]
+#![feature(coroutine_trait)]
+#![feature(exclusive_wrapper)]
+#![feature(error_generic_member_access)]
+#![feature(error_in_core)]
+#![feature(fn_traits)]
+#![feature(dispatch_from_dyn)]
+#![feature(tuple_trait)]
+#![feature(unboxed_closures)]
+#![feature(unsize)]
+
+mod pointer;
 
 #[doc(hidden)]
-pub use core::{marker::PhantomData, mem::ManuallyDrop};
-use core::{
-    mem::{self},
-    ops::{Deref, DerefMut},
-    panic::{RefUnwindSafe, UnwindSafe},
-    pin::Pin,
-    ptr,
-};
+pub use core::{marker::PhantomData, mem::ManuallyDrop, pin::Pin};
+use core::{ops::Deref, sync::Exclusive};
+
+pub use self::pointer::OnStack;
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
-#[cfg(feature = "alloc")]
-pub use self::boxed::*;
 
-/// The pointer trait alias which it requires to construct an [`OPin<T, P>`].
-pub trait DerefOPin<'a, T: ?Sized + 'a>: DerefMut<Target = ManuallyDrop<T>> + 'a {}
-impl<'a, T: ?Sized + 'a, P: DerefMut<Target = ManuallyDrop<T>> + 'a> DerefOPin<'a, T> for P {}
+/// A wrapper that both owns and pins data on the stack.
+pub type OPin<'a, T> = Pin<OnStack<'a, T>>;
 
-/// An owned and pinned pointer.
+/// Represents a smart pointer whose pointed data can be safely moved out by
+/// [`into_inner`](IntoInner::into_inner).
 ///
-/// This is a wrapper around a kind of pointer which makes that pointer "own"
-/// and "pin" its value in place, preventing the value referenced by that
-/// pointer from being moved unless it implements [`Unpin`].
-///
-/// Unlike [`Pin<P>`], which can reborrow itself to a shorter lifetime of
-/// `Pin<&T>` or `Pin<&mut T>`, this wrapper makes the pointer "own" its value,
-/// and thus cannot reborrow itself. This enables the wrapper to manually
-/// ["transfer"](OPin::unpin) the ownership of the value to any desired place if
-/// the value is `Unpin`, working like an R-value reference in C++.
-///
-/// `OPin<'_, T, P>` is guaranteed to have the same memory layout and ABI as
-/// `P`.
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(transparent)]
-pub struct OPin<'a, T, P = &'a mut ManuallyDrop<T>>
-where
-    T: ?Sized,
-    P: DerefOPin<'a, T>,
-{
-    #[doc(hidden)]
-    pub pointer: P,
-    #[doc(hidden)]
-    // Add a tuple element of `T` to inform the dropck of owning the value.
-    pub marker: PhantomData<(&'a mut T, T)>,
+/// This trait doesn't require [`Deref`], because some smart pointers like `Rc`
+/// shares its reference and may returns an option of the underlying data.
+pub trait IntoInner {
+    type Target;
+
+    /// Move out the desired target, and call the possible dropping function of
+    /// the additional metadata held by the pointer.
+    fn into_inner(self) -> Self::Target;
 }
 
-// The wrapper itself should be `Unpin` if the underlying pointer is `Unpin`.
-impl<'a, T, P> Unpin for OPin<'a, T, P>
-where
-    T: ?Sized,
-    P: DerefOPin<'a, T> + Unpin,
-{
-}
-
-impl<'a, T, P> UnwindSafe for OPin<'a, T, P>
-where
-    T: ?Sized,
-    P: DerefOPin<'a, T> + UnwindSafe,
-{
-}
-
-impl<'a, T, P> RefUnwindSafe for OPin<'a, T, P>
-where
-    T: ?Sized,
-    P: DerefOPin<'a, T> + RefUnwindSafe,
-{
-}
-
-impl<'a, T, P> OPin<'a, T, P>
-where
-    T: ?Sized,
-    P: DerefOPin<'a, T>,
-{
-    /// Construct a new `OPin` from a **OWNED** pointer to `ManuallyDrop<T>`.
-    ///
-    /// Note that there's no alternative like `OPin::new` even if `T` implements
-    /// [`Unpin`], because the ownership of the value is semantically moved into
-    /// this structure and cannot be used again even after this `OPin` drops.
-    ///
-    /// # Safety
-    ///
-    /// The value bebind the pointer must not be used anymore once this function
-    /// is called, which is a stronger restriction than [`Pin::new_unchecked`].
-    /// If such requirement is not satisfied, that is a violation of the API
-    /// contract and may lead to undefined behavior in later (safe) operations.
-    pub unsafe fn new_unchecked(pointer: P) -> Self {
-        OPin {
-            pointer,
-            marker: PhantomData,
-        }
-    }
-
-    /// Get a pinned shared reference from this pinned pointer.
-    ///
-    /// See [`Pin::as_ref`] for more information.
-    pub fn as_ref(&self) -> Pin<&T> {
-        // SAFETY: The underlying reference is semantically pinned.
-        unsafe { Pin::new_unchecked(&self.pointer) }
-    }
-
-    /// Get a pinned mutable reference from this pinned pointer.
-    ///
-    /// See [`Pin::as_mut`] for more information.
-    pub fn as_mut(&mut self) -> Pin<&mut T>
-    where
-        P: DerefMut<Target = ManuallyDrop<T>>,
-    {
-        // SAFETY: The underlying pointer is semantically pinned.
-        unsafe { Pin::new_unchecked(&mut self.pointer) }
-    }
-}
-
-impl<'a, T, P> Deref for OPin<'a, T, P>
-where
-    T: ?Sized,
-    P: DerefOPin<'a, T>,
-{
+impl<T> IntoInner for ManuallyDrop<T> {
     type Target = T;
 
-    fn deref(&self) -> &Self::Target {
-        self.pointer.deref()
+    fn into_inner(self) -> Self::Target {
+        ManuallyDrop::into_inner(self)
     }
 }
 
-impl<'a, T, P> OPin<'a, T, P>
-where
-    T: ?Sized + Unpin,
-    P: DerefOPin<'a, T>,
-{
-    /// Move out the underlying value, if it is `Unpin`.
-    ///
-    /// See the example in the documentation of [`opin`] for more information.
-    pub fn unpin(this: OPin<'a, T, P>) -> T
-    where
-        T: Sized,
-    {
-        // SAFETY: The underlying pointer OWNS its value by the contract stated in
-        // `OPin::new_unchecked`, and the value is `Unpin`.
-        unsafe {
-            let mut pointer = ptr::read(&this.pointer);
-            // Forgetting the `OPin` prevents the pointer from double dropping.
-            mem::forget(this);
-            // The value inside the pointer won't be dropped twice since we only move out
-            // the value once.
-            ManuallyDrop::take(pointer.deref_mut())
+impl<T> IntoInner for Exclusive<T> {
+    type Target = T;
+
+    fn into_inner(self) -> Self::Target {
+        self.into_inner()
+    }
+}
+
+#[cfg(feature = "alloc")]
+mod alloc2 {
+    use alloc::{boxed::Box, rc::Rc, sync::Arc};
+    use core::alloc::Allocator;
+
+    use crate::IntoInner;
+
+    impl<T, A: Allocator> IntoInner for Box<T, A> {
+        type Target = T;
+
+        fn into_inner(self) -> T {
+            *self
         }
     }
 
-    /// Consume the object and return the underlying pointer.
-    ///
-    /// The returned pointer actually points to a [`ManuallyDrop<T>`], so the
-    /// user should manually drop the value inside the pointer, since we cannot
-    /// deduce the type information and transmutes it to some pointer type that
-    /// can automatically drop the pointed value.
-    pub fn into_inner(this: OPin<'a, T, P>) -> P {
-        // SAFETY: The underlying pointer OWNS its value by the contract stated in
-        // `OPin::new_unchecked`, and the value is `Unpin`.
-        unsafe {
-            let pointer = ptr::read(&this.pointer);
-            // Forgetting the `OPin` prevents the pointer from double dropping.
-            mem::forget(this);
-            pointer
+    impl<T, A: Allocator> IntoInner for Rc<T, A> {
+        type Target = Option<T>;
+
+        fn into_inner(self) -> Self::Target {
+            Rc::into_inner(self)
+        }
+    }
+
+    impl<T, A: Allocator> IntoInner for Arc<T, A> {
+        type Target = Option<T>;
+
+        fn into_inner(self) -> Self::Target {
+            Arc::into_inner(self)
         }
     }
 }
 
-impl<'a, T, P> DerefMut for OPin<'a, T, P>
-where
-    T: ?Sized + Unpin,
-    P: DerefOPin<'a, T>,
-{
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.pointer.deref_mut()
-    }
-}
-
-impl<'a, T, P> Drop for OPin<'a, T, P>
-where
-    T: ?Sized,
-    P: DerefOPin<'a, T>,
-{
-    fn drop(&mut self) {
-        // SAFETY: The underlying pointer OWNS its value by the contract stated in
-        // `OPin::new_unchecked`.
-        unsafe { ManuallyDrop::drop(self.pointer.deref_mut()) }
-    }
-}
-
-/// Pin a value onto the current calling stack.
+/// Pins a value onto the current calling stack.
 ///
 /// If the value is `Unpin`, the user can safety [move out](OPin::unpin) the
 /// value and use it again.
@@ -296,26 +184,29 @@ where
 /// // Pins the value onto the stack.
 /// let pinned = opin!(String::from("Hello!"));
 /// // Retrieves back the data because `String` is `Unpin`.
-/// let string = unpin(pinned);
+/// let string: String = unpin(pinned);
+/// assert_eq!(string, "Hello!");
 /// ```
 #[macro_export]
-#[allow_internal_unsafe]
+#[allow_internal_unstable(unsafe_pin_internals)]
 macro_rules! opin {
     ($value:expr) => {
-        $crate::OPin {
-            pointer: &mut $crate::ManuallyDrop::new($value),
-            marker: $crate::PhantomData,
+        $crate::Pin {
+            pointer: $crate::OnStack {
+                inner: &mut $crate::ManuallyDrop::new($value),
+                marker: $crate::PhantomData,
+            },
         }
     };
 }
 
-/// Move out the underlying pinned value, if it is `Unpin`.
+/// Moves out the underlying pinned value, if it is `Unpin`.
 ///
 /// See the example in the documentation of [`opin`] for more information.
-pub fn unpin<'a, T, P>(pinned: OPin<'a, T, P>) -> T
+pub fn unpin<P>(pinned: Pin<P>) -> <P as IntoInner>::Target
 where
-    T: Unpin,
-    P: DerefOPin<'a, T>,
+    P: Deref + IntoInner,
+    <P as Deref>::Target: Unpin + Sized,
 {
-    OPin::unpin(pinned)
+    Pin::into_inner(pinned).into_inner()
 }

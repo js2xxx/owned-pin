@@ -22,7 +22,9 @@ try_to_take_the_ownership_of(value.as_mut());
 try_to_take_the_ownership_of(value.as_mut());
 ```
 
-But the [`OPin<T, P>`] wrapper, which both "own" and "pin" the data in the memory, enables the example above to work as desired:
+In practice, this is because there is no such smart pointer that owns data by holding a unique reference to some other location on the stack.
+
+Thus, we introduce the `OnStack<T>` smart pointer and an alias of `OPin<T>` = `Pin<OnStack<T>>`, which both "own" and "pin" the data on the stack, enabling the example above to work as desired:
 
 ```rust,compile_fail
 use owned_pin::{OPin, opin};
@@ -31,7 +33,8 @@ use core::marker::PhantomPinned;
 fn take_the_ownership_of<T>(owned_and_pinned: OPin<T>) {}
 
 let value = opin!(PhantomPinned);
-// The `as_mut` method of `OPin` actually returns `Pin<&mut T>`...
+// The `as_mut` method of `OPin` actually
+// returns a `Pin<&mut T>`...
 take_the_ownership_of(value);
 // ... so the value itself cannot be used again.
 // The line below causes rustc to emit `E0382`.
@@ -46,5 +49,5 @@ use owned_pin::{opin, unpin};
 // Pins the value onto the stack.
 let pinned = opin!(String::from("Hello!"));
 // Retrieves back the data because `String` is `Unpin`.
-let string = unpin(pinned);
+let string: String = unpin(pinned);
 ```
