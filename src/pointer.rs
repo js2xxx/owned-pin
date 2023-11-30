@@ -24,7 +24,7 @@ use crate::IntoInner;
 /// value is stored somewhere else on the stack, while the storage place itself
 /// is directly unreachable.
 ///
-/// See [`the module level documentation`](crate) for more information.
+/// See [the module level documentation](crate) for more information.
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct OnStack<'a, T: ?Sized> {
