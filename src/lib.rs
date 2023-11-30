@@ -87,11 +87,12 @@
 #![feature(allow_internal_unstable)]
 #![feature(coerce_unsized)]
 #![feature(coroutine_trait)]
+#![feature(dispatch_from_dyn)]
 #![feature(exclusive_wrapper)]
 #![feature(error_generic_member_access)]
 #![feature(error_in_core)]
 #![feature(fn_traits)]
-#![feature(dispatch_from_dyn)]
+#![feature(receiver_trait)]
 #![feature(tuple_trait)]
 #![feature(unboxed_closures)]
 #![feature(unsize)]
@@ -218,10 +219,10 @@ macro_rules! on_stack {
 ///
 /// This macro is the shorthand for
 /// [`on_stack!(MaybeUninit::uninit())`](on_stack); users can specify the
-/// desired type in the argument of this macro.
+/// desired type in the arguments of this macro.
 ///
-/// The user can later write this pointer with a value to obtain the initialized
-/// result.
+/// The user can either write this pointer with a value to obtain the
+/// initialized result, or use an [in-place initializer](OnStack::init).
 ///
 /// # Examples
 ///
@@ -239,6 +240,52 @@ macro_rules! uninit_on_stack {
     };
     () => {
         $crate::on_stack!($crate::MaybeUninit::uninit())
+    };
+}
+
+/// Initializes an owned value directly on the stack using an initializer of
+/// [`Init`](pinned_init::Init).
+///
+/// # Examples
+///
+/// ```rust
+/// use owned_pin::init_on_stack;
+///
+/// // This value is directly written to
+/// // the target place, instead of being
+/// // temporary place on the stack.
+/// init_on_stack!(let x = [0; 100]);
+/// assert_eq!(*x, [0; 100]);
+/// ```
+#[macro_export]
+#[cfg(feature = "pinned-init")]
+macro_rules! init_on_stack {
+    (let $value:tt $(: $ty:ty)? = $init:expr) => {
+        let __uninit = $crate::uninit_on_stack!();
+        let $value = $crate::OnStack::init(__uninit, $init).unwrap();
+    };
+}
+
+/// Attempts to initialize an owned value directly on the stack using an
+/// initializer of [`Init`](pinned_init::Init).
+///
+/// # Examples
+///
+/// ```rust
+/// use owned_pin::try_init_on_stack;
+///
+/// // This value is directly written to
+/// // the target place, instead of being
+/// // temporary place on the stack.
+/// try_init_on_stack!(let x = [0; 100]);
+/// assert_eq!(*x.unwrap(), [0; 100]);
+/// ```
+#[macro_export]
+#[cfg(feature = "pinned-init")]
+macro_rules! try_init_on_stack {
+    (let $value:tt $(: $ty:ty)? = $init:expr) => {
+        let __uninit = $crate::uninit_on_stack!();
+        let $value = $crate::OnStack::init(__uninit, $init);
     };
 }
 
@@ -268,6 +315,77 @@ macro_rules! opin {
                 marker: $crate::PhantomData,
             },
         }
+    };
+}
+
+/// Pins an uninitialized value onto the current calling stack.
+///
+/// This macro is the shorthand for [`opin!(MaybeUninit::uninit())`](opin);
+/// users can specify the desired type in the arguments of this macro.
+///
+/// To initialize this value, the [`pin_init`](OnStack::pin_init) method should
+/// be used in most cases.
+///
+/// See [`pinned-init`](pinned_init) crate for how to directly initialize a
+/// pinned value.
+#[macro_export]
+macro_rules! opin_uninit {
+    ($ty:ty) => {
+        $crate::opin!($crate::MaybeUninit::<$ty>::uninit())
+    };
+    () => {
+        $crate::opin!($crate::MaybeUninit::uninit())
+    };
+}
+
+/// Initializes and pins an owned value directly on the stack using an
+/// initializer of [`PinInit`](pinned_init::PinInit).
+///
+/// # Examples
+///
+/// ```rust
+/// use owned_pin::{opin_init, OPin};
+/// use pinned_init::pin_data;
+///
+/// #[pin_data]
+/// struct A {
+///     x: u32
+/// }
+///
+/// opin_init!(let a = A { x: 64 });
+/// assert_eq!(a.x, 64);
+/// ```
+#[macro_export]
+#[cfg(feature = "pinned-init")]
+macro_rules! opin_init {
+    (let $value:tt $(: $ty:ty)? = $init:expr) => {
+        let __uninit = $crate::opin_uninit!($($ty:ty)?);
+        let $value = $crate::OnStack::pin_init(__uninit, $init).unwrap();
+    };
+}
+
+/// Attempts to initialize and pin an owned value directly on the stack using an
+/// initializer of [`PinInit`](pinned_init::PinInit).
+///
+/// # Examples
+///
+/// ```rust
+/// use owned_pin::{try_opin_init, OPin};
+/// use pinned_init::pin_data;
+///
+/// #[pin_data]
+/// struct A {
+///     x: u32
+/// }
+///
+/// try_opin_init!(let a = A { x: 64 });
+/// assert_eq!(a.unwrap().x, 64);
+#[macro_export]
+#[cfg(feature = "pinned-init")]
+macro_rules! try_opin_init {
+    (let $value:tt $(: $ty:ty)? = $init:expr) => {
+        let __uninit = $crate::opin_uninit!($($ty:ty)?);
+        let $value = $crate::OnStack::pin_init(__uninit, $init);
     };
 }
 

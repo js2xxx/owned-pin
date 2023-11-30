@@ -8,14 +8,19 @@ use core::{
     iter::FusedIterator,
     marker::{PhantomData, Tuple, Unsize},
     mem::{self, ManuallyDrop, MaybeUninit},
-    ops::{CoerceUnsized, Coroutine, CoroutineState, Deref, DerefMut, DispatchFromDyn},
+    ops::{CoerceUnsized, Coroutine, CoroutineState, Deref, DerefMut, DispatchFromDyn, Receiver},
     panic::UnwindSafe,
     pin::Pin,
     ptr,
     task::{Context, Poll},
 };
 
+#[cfg(feature = "pinned-init")]
+use pinned_init::{Init, PinInit};
+
 use crate::IntoInner;
+#[cfg(feature = "pinned-init")]
+use crate::OPin;
 
 /// A pointer type that uniquely owns its data on the stack. but via the
 /// implementation of a mutable reference to its `ManuallyDrop` wrapped form.
@@ -53,6 +58,8 @@ impl<'a, T: ?Sized + fmt::Display> fmt::Display for OnStack<'a, T> {
         (self.inner).fmt(f)
     }
 }
+
+impl<'a, T: ?Sized> Receiver for OnStack<'a, T> {}
 
 impl<'a, T: ?Sized + Unsize<U>, U: ?Sized> CoerceUnsized<OnStack<'a, U>> for OnStack<'a, T> {}
 
@@ -147,6 +154,30 @@ impl<'a, T> OnStack<'a, MaybeUninit<T>> {
         (*pointer).write(value);
         // SAFETY: We just wrote a valid value onto the storage place.
         unsafe { pointer.assume_init() }
+    }
+}
+
+#[cfg(feature = "pinned-init")]
+impl<'a, T> OnStack<'a, MaybeUninit<T>> {
+    /// Initialize a uninitialized pointer [on stack](OnStack) using an
+    /// initializer that implements [`Init`] trait.
+    pub fn init<E>(mut pointer: Self, init: impl Init<T, E>) -> Result<OnStack<'a, T>, E> {
+        // SAFETY: The memory slot is valid.
+        unsafe { init.__init(pointer.as_mut_ptr())? };
+        // SAFETY: The slot is now initialized.
+        Ok(unsafe { pointer.assume_init() })
+    }
+
+    /// Initialize a pinned and uninitialized pointer [on stack](OnStack) using
+    /// an initializer that implements [`PinInit`] trait.
+    pub fn pin_init<E>(pointer: Pin<Self>, init: impl PinInit<T, E>) -> Result<OPin<'a, T>, E> {
+        // SAFETY: `this` is never moved out.
+        let mut this = unsafe { Pin::into_inner_unchecked(pointer) };
+        // SAFETY: The memory slot is valid and this type ensures that it will stay
+        // pinned.
+        unsafe { init.__pinned_init(this.as_mut_ptr())? };
+        // SAFETY: The slot is now initialized.
+        Ok(OnStack::into_pin(unsafe { this.assume_init() }))
     }
 }
 

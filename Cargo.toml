@@ -13,5 +13,9 @@ keywords = ["owned", "pin", "move", "rvalue"]
 repository = "https://github.com/js2xxx/owned-pin"
 
 [features]
-alloc = []
-default = ["alloc"]
+alloc = ["pinned-init/alloc"]
+default = ["alloc", "pinned-init"]
+pinned-init = ["dep:pinned-init"]
+
+[dependencies]
+pinned-init = {version = "0.0", default-features = false, optional = true}
