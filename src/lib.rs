@@ -108,6 +108,10 @@ extern crate alloc;
 #[cfg(feature = "alloc")]
 pub use self::boxed::*;
 
+/// The pointer trait alias which it requires to construct an [`OPin<T, P>`].
+pub trait DerefOPin<'a, T: ?Sized + 'a>: DerefMut<Target = ManuallyDrop<T>> + 'a {}
+impl<'a, T: ?Sized + 'a, P: DerefMut<Target = ManuallyDrop<T>> + 'a> DerefOPin<'a, T> for P {}
+
 /// An owned and pinned pointer.
 ///
 /// This is a wrapper around a kind of pointer which makes that pointer "own"
@@ -127,18 +131,19 @@ pub use self::boxed::*;
 pub struct OPin<'a, T, P = &'a mut ManuallyDrop<T>>
 where
     T: ?Sized,
-    P: DerefMut<Target = ManuallyDrop<T>> + 'a,
+    P: DerefOPin<'a, T>,
 {
     #[doc(hidden)]
     pub pointer: P,
     #[doc(hidden)]
-    pub marker: PhantomData<&'a mut ()>,
+    // Add a tuple element of `T` to inform the dropck of owning the value.
+    pub marker: PhantomData<(&'a mut T, T)>,
 }
 
 impl<'a, T, P> OPin<'a, T, P>
 where
     T: ?Sized,
-    P: DerefMut<Target = ManuallyDrop<T>> + 'a,
+    P: DerefOPin<'a, T>,
 {
     /// Construct a new `OPin` from a **OWNED** pointer to `ManuallyDrop<T>`.
     ///
@@ -182,7 +187,7 @@ where
 impl<'a, T, P> Deref for OPin<'a, T, P>
 where
     T: ?Sized,
-    P: DerefMut<Target = ManuallyDrop<T>> + 'a,
+    P: DerefOPin<'a, T>,
 {
     type Target = T;
 
@@ -193,11 +198,16 @@ where
 
 impl<'a, T, P> OPin<'a, T, P>
 where
-    T: Unpin,
-    P: DerefMut<Target = ManuallyDrop<T>> + 'a,
+    T: ?Sized + Unpin,
+    P: DerefOPin<'a, T>,
 {
     /// Move out the underlying value, if it is `Unpin`.
-    pub fn unpin(this: OPin<'a, T, P>) -> T {
+    ///
+    /// See the example in the documentation of [`opin`] for more information.
+    pub fn unpin(this: OPin<'a, T, P>) -> T
+    where
+        T: Sized,
+    {
         // SAFETY: The underlying pointer OWNS its value by the contract stated in
         // `OPin::new_unchecked`, and the value is `Unpin`.
         unsafe {
@@ -231,7 +241,7 @@ where
 impl<'a, T, P> DerefMut for OPin<'a, T, P>
 where
     T: ?Sized + Unpin,
-    P: DerefMut<Target = ManuallyDrop<T>> + 'a,
+    P: DerefOPin<'a, T>,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.pointer.deref_mut()
@@ -241,7 +251,7 @@ where
 impl<'a, T, P> Drop for OPin<'a, T, P>
 where
     T: ?Sized,
-    P: DerefMut<Target = ManuallyDrop<T>> + 'a,
+    P: DerefOPin<'a, T>,
 {
     fn drop(&mut self) {
         // SAFETY: The underlying pointer OWNS its value by the contract stated in
@@ -258,12 +268,12 @@ where
 /// # Examples
 ///
 /// ```rust
-/// use owned_pin::{opin, OPin};
+/// use owned_pin::{opin, unpin};
 ///
 /// // Pins the value onto the stack.
 /// let pinned = opin!(String::from("Hello!"));
 /// // Retrieves back the data because `String` is `Unpin`.
-/// let string = OPin::unpin(pinned);
+/// let string = unpin(pinned);
 /// ```
 #[macro_export]
 #[allow_internal_unsafe]
@@ -274,4 +284,15 @@ macro_rules! opin {
             marker: $crate::PhantomData,
         }
     };
+}
+
+/// Move out the underlying pinned value, if it is `Unpin`.
+///
+/// See the example in the documentation of [`opin`] for more information.
+pub fn unpin<'a, T, P>(pinned: OPin<'a, T, P>) -> T
+where
+    T: Unpin,
+    P: DerefOPin<'a, T>,
+{
+    OPin::unpin(pinned)
 }
