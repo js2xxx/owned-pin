@@ -6,8 +6,9 @@
 //! loads and stores of pointers. This may be detected at compile time using
 //! `#[cfg(target_has_atomic = "ptr")]`.
 
+#[cfg(feature = "pinned-init")]
+use core::alloc::AllocError;
 use core::{
-    alloc::AllocError,
     error::Error,
     fmt,
     hash::Hash,
@@ -20,11 +21,12 @@ use core::{
 };
 
 pub use owned_pin_macros::RefCounted;
+#[cfg(feature = "pinned-init")]
 use pinned_init::InPlaceInit;
 
-pub use crate::{
-    apin, apin_init, arsc_init_on_stack, arsc_on_stack, arsc_try_init_on_stack, try_apin_init,
-};
+pub use crate::{apin, arsc_on_stack};
+#[cfg(feature = "pinned-init")]
+pub use crate::{apin_init, arsc_init_on_stack, arsc_try_init_on_stack, try_apin_init};
 use crate::{IntoInner, OnStack, RawConvertable};
 
 const REF_COUNT_MAX: usize = (isize::MAX) as usize;
@@ -143,6 +145,9 @@ pub type APin<'a, T> = Pin<Arsc<OnStack<'a, T>>>;
 /// Allocating memory on the heap:
 ///
 /// ```rust
+/// # #[cfg(feature = "alloc")]
+/// # {
+///
 /// use owned_pin::sync::{Arsc, ArscExt, RefCount, RefCounted};
 ///
 /// #[derive(RefCounted)]
@@ -159,6 +164,8 @@ pub type APin<'a, T> = Pin<Arsc<OnStack<'a, T>>>;
 /// let cloned = arsc.clone();
 ///
 /// assert!(Arsc::ptr_eq(&arsc, &cloned));
+///
+/// # }
 /// ```
 ///
 /// Pin it onto the stack using [`apin`]:
@@ -342,6 +349,9 @@ where
     /// # Examples
     ///
     /// ```rust
+    /// # #[cfg(feature = "alloc")]
+    /// # {
+    ///
     /// use owned_pin::sync::{Arsc, ArscExt, RefCount, RefCounted};
     ///
     /// #[derive(RefCounted)]
@@ -359,6 +369,8 @@ where
     /// let cloned = arsc.clone();
     ///
     /// assert!(Arsc::ptr_eq(&arsc, &cloned));
+    ///
+    /// # }
     /// ```
     fn arsc(value: <Self as Deref>::Target) -> Arsc<Self> {
         Arsc::from(value)
@@ -369,6 +381,9 @@ where
     /// # Examples
     ///
     /// ```rust
+    /// # #[cfg(feature = "alloc")]
+    /// # {
+    ///
     /// use owned_pin::sync::{Arsc, ArscExt, RefCount, RefCounted};
     /// use std::pin::Pin;
     ///
@@ -380,11 +395,13 @@ where
     /// }
     ///
     /// // `Box<T: RefCounted>` implements `ArscExt`.
-    /// let arsc: Pin<Arsc<Box<A>> >= Box::apin(A {
+    /// let arsc: Pin<Arsc<Box<A>>> = Box::apin(A {
     ///     value: "Hello!",
     ///     rc: RefCount::new(),
     /// });
     /// let cloned = arsc.clone();
+    ///
+    /// # }
     /// ```
     fn apin(value: <Self as Deref>::Target) -> Pin<Arsc<Self>> {
         // The inner pointer pins it owned data in memory by the contract in `Unpin`.
@@ -399,6 +416,7 @@ where
 {
 }
 
+#[cfg(feature = "pinned-init")]
 impl<P, T> InPlaceInit<T> for Arsc<P>
 where
     P: Deref<Target = T> + InPlaceInit<T> + IntoInner,
@@ -442,6 +460,7 @@ where
 /// assert_eq!(l.unwrap().x, [0; 100]);
 /// ```
 #[macro_export]
+#[cfg(feature = "pinned-init")]
 macro_rules! arsc_try_init_on_stack {
     (let $value:ident $(:$ty:ty)? = $($init:tt)*) => {
         $crate::try_init_on_stack!(let __init $(:$ty)? = $($init)*);
@@ -475,6 +494,7 @@ macro_rules! arsc_try_init_on_stack {
 /// assert_eq!(l.x, [0; 100]);
 /// ```
 #[macro_export]
+#[cfg(feature = "pinned-init")]
 macro_rules! arsc_init_on_stack {
     (let $value:ident $(:$ty:ty)? = $($init:tt)*) => {
         $crate::init_on_stack!(let __init $(:$ty)? = $($init)*);
@@ -505,6 +525,7 @@ macro_rules! arsc_init_on_stack {
 /// assert_eq!(a.unwrap().x, 64);
 #[macro_export]
 #[allow_internal_unstable(unsafe_pin_internals)]
+#[cfg(feature = "pinned-init")]
 macro_rules! try_apin_init {
     (let $value:ident $(:$ty:ty)? = $($init:tt)*) => {
         $crate::try_opin_init!(let __opin $(:$ty)? = $($init)*);
@@ -536,6 +557,7 @@ macro_rules! try_apin_init {
 /// assert_eq!(a.x, 64);
 #[macro_export]
 #[allow_internal_unstable(unsafe_pin_internals)]
+#[cfg(feature = "pinned-init")]
 macro_rules! apin_init {
     (let $value:ident $(:$ty:ty)? = $($init:tt)*) => {
         $crate::opin_init!(let __opin $(:$ty)? = $($init)*);
@@ -684,6 +706,9 @@ where
     /// # Examples
     ///
     /// ```rust
+    /// # #[cfg(feature = "alloc")]
+    /// # {
+    ///
     /// use owned_pin::sync::{Arsc, ArscExt, RefCount, RefCounted};
     ///
     /// #[derive(RefCounted)]
@@ -700,6 +725,8 @@ where
     /// let cloned = arsc.clone();
     ///
     /// assert!(Arsc::ptr_eq(&arsc, &cloned));
+    ///
+    /// # }
     /// ```
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
         Self::as_ptr(a) == Self::as_ptr(b)

@@ -123,6 +123,7 @@ pub use core::{
 use core::{ops::Deref, ptr::NonNull};
 
 #[doc(hidden)]
+#[cfg(feature = "pinned-init")]
 pub use pinned_init::{init, pin_init};
 
 pub use self::pointer::OnStack;
