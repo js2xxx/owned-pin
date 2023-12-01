@@ -81,6 +81,18 @@
 //! memory safety requirements of Rust.
 //!
 //! The more detailed comparison is yet to be discussed.
+//!
+//! # Utilities
+//!
+//! Beside introducing the new `OnStack` type, we have also built some basic
+//! data structures that can be pinned onto the stack, demonstrating some of its
+//! potential by the way:
+//!
+//! - [`Arsc<P>`](sync::Arsc): an intrusive & thread-safe reference-counting
+//!   pointer **wrapper**.
+//!
+//! Other utilities are currently under development.
+
 #![no_std]
 #![allow(internal_features)]
 #![feature(allocator_api)]
@@ -99,6 +111,7 @@
 #![cfg_attr(feature = "alloc", feature(new_uninit))]
 
 mod pointer;
+#[cfg(target_has_atomic = "ptr")]
 pub mod sync;
 
 #[doc(hidden)]
@@ -107,7 +120,10 @@ pub use core::{
     mem::{ManuallyDrop, MaybeUninit},
     pin::Pin,
 };
-use core::{ops::Deref, ptr::NonNull, sync::Exclusive};
+use core::{ops::Deref, ptr::NonNull};
+
+#[doc(hidden)]
+pub use pinned_init::{init, pin_init};
 
 pub use self::pointer::OnStack;
 
@@ -121,15 +137,20 @@ pub type OPin<'a, T> = Pin<OnStack<'a, T>>;
 /// [`into_inner`](IntoInner::into_inner).
 ///
 /// Implementing this trait proves the smart pointer owns its pointed data.
-///
-/// This trait doesn't require [`Deref`], because some smart pointers like `Rc`
-/// shares its reference and may returns an option of the underlying data.
-pub trait IntoInner {
-    type Target;
-
+pub trait IntoInner: Unpin + Deref {
     /// Move out the desired target, and call the possible dropping function of
     /// the additional metadata held by the pointer.
     fn into_inner(self) -> Self::Target;
+
+    /// Move out the desired target, and call the possible dropping function of
+    /// the additional metadata held by the pointer.
+    fn try_unwrap(this: Self) -> Result<Self::Target, Self>
+    where
+        Self::Target: Sized,
+        Self: Sized,
+    {
+        Ok(this.into_inner())
+    }
 }
 
 /// Smart pointers that can convert themselves into raw forms, and is able to
@@ -176,27 +197,11 @@ where
     unsafe fn assume_init(this: Self::Uninit) -> Self;
 }
 
-impl<T> IntoInner for ManuallyDrop<T> {
-    type Target = T;
-
-    fn into_inner(self) -> Self::Target {
-        ManuallyDrop::into_inner(self)
-    }
-}
-
 unsafe impl<T> Uninit for ManuallyDrop<T> {
     type Uninit = ManuallyDrop<MaybeUninit<T>>;
 
     unsafe fn assume_init(this: Self::Uninit) -> Self {
         ManuallyDrop::new(unsafe { ManuallyDrop::into_inner(this).assume_init() })
-    }
-}
-
-impl<T> IntoInner for Exclusive<T> {
-    type Target = T;
-
-    fn into_inner(self) -> Self::Target {
-        self.into_inner()
     }
 }
 
@@ -207,27 +212,29 @@ mod alloc2 {
 
     use crate::{IntoInner, RawConvertable, Uninit};
 
-    impl<T, A: Allocator> IntoInner for Box<T, A> {
-        type Target = T;
-
+    impl<T, A: Allocator + 'static> IntoInner for Box<T, A> {
         fn into_inner(self) -> T {
             *self
         }
     }
 
     impl<T, A: Allocator> IntoInner for Rc<T, A> {
-        type Target = Option<T>;
+        fn into_inner(self) -> T {
+            Rc::into_inner(self).unwrap()
+        }
 
-        fn into_inner(self) -> Self::Target {
-            Rc::into_inner(self)
+        fn try_unwrap(this: Self) -> Result<T, Self> {
+            Rc::try_unwrap(this)
         }
     }
 
     impl<T, A: Allocator> IntoInner for Arc<T, A> {
-        type Target = Option<T>;
+        fn into_inner(self) -> T {
+            Arc::into_inner(self).unwrap()
+        }
 
-        fn into_inner(self) -> Self::Target {
-            Arc::into_inner(self)
+        fn try_unwrap(this: Self) -> Result<T, Self> {
+            Arc::try_unwrap(this)
         }
     }
 
@@ -315,217 +322,27 @@ mod alloc2 {
     }
 }
 
-/// Constructs a smart pointer [on the current calling stack](OnStack) from the
-/// value.
-///
-/// Unlike other pointers like `Box<T>`, this returned pointer consumes no
-/// additional memory on the heap, at the cost of restricted lifetime of the
-/// current calling context.
-///
-/// This pointer serves no additional functionality, unless used with [`Pin`].
-///
-/// # Examples
-///
-/// ```rust
-/// // Basic usage
-/// use owned_pin::{on_stack, IntoInner};
-///
-/// let pointer = on_stack!(String::from("Hello!"));
-/// let string = IntoInner::into_inner(pointer);
-/// assert_eq!(string, "Hello!");
-/// ```
-///
-/// ```rust
-/// // Pinning the pointer
-/// use owned_pin::{on_stack, OnStack};
-///
-/// let pointer = on_stack!(String::from("Hello!"));
-/// let pinned = OnStack::into_pin(pointer);
-/// // Use this pinned pointer while keeping the semantic ownership.
-/// ```
-#[macro_export]
-macro_rules! on_stack {
-    ($value:expr) => {
-        $crate::OnStack {
-            inner: &mut $crate::ManuallyDrop::new($value),
-            marker: $crate::PhantomData,
-        }
-    };
-}
-
-/// Constructs an uninitialized smart pointer [on the current calling
-/// stack](OnStack).
-///
-/// This macro is the shorthand for
-/// [`on_stack!(MaybeUninit::uninit())`](on_stack); users can specify the
-/// desired type in the arguments of this macro.
-///
-/// The user can either write this pointer with a value to obtain the
-/// initialized result, or use an [in-place initializer](OnStack::init).
-///
-/// # Examples
-///
-/// ```rust
-/// use owned_pin::{uninit_on_stack, OnStack};
-///
-/// let uninit = uninit_on_stack!(String);
-/// let pointer = OnStack::write(uninit, "Hello!".into());
-/// assert_eq!(*pointer, "Hello!");
-/// ```
-#[macro_export]
-macro_rules! uninit_on_stack {
-    ($($ty:ty)?) => {
-        $crate::on_stack!($crate::MaybeUninit$(::<$ty>)?::uninit())
-    };
-}
-
-/// Initializes an owned value directly on the stack using an initializer of
-/// [`Init`](pinned_init::Init).
-///
-/// # Examples
-///
-/// ```rust
-/// use owned_pin::init_on_stack;
-///
-/// // This value is directly written to
-/// // the target place, instead of being
-/// // temporary place on the stack.
-/// init_on_stack!(let x = [0; 100]);
-/// assert_eq!(*x, [0; 100]);
-/// ```
-#[macro_export]
-#[cfg(feature = "pinned-init")]
-macro_rules! init_on_stack {
-    (let $value:tt $(: $ty:ty)? = $init:expr) => {
-        let __uninit = $crate::uninit_on_stack!();
-        let $value = $crate::OnStack::init(__uninit, $init).unwrap();
-    };
-}
-
-/// Attempts to initialize an owned value directly on the stack using an
-/// initializer of [`Init`](pinned_init::Init).
-///
-/// # Examples
-///
-/// ```rust
-/// use owned_pin::try_init_on_stack;
-///
-/// // This value is directly written to
-/// // the target place, instead of being
-/// // temporary place on the stack.
-/// try_init_on_stack!(let x = [0; 100]);
-/// assert_eq!(*x.unwrap(), [0; 100]);
-/// ```
-#[macro_export]
-#[cfg(feature = "pinned-init")]
-macro_rules! try_init_on_stack {
-    (let $value:tt $(: $ty:ty)? = $init:expr) => {
-        let __uninit = $crate::uninit_on_stack!();
-        let $value = $crate::OnStack::init(__uninit, $init);
-    };
-}
-
-/// Pins a value onto the current calling stack.
-///
-/// If the value is `Unpin`, the user can safety [move out](unpin) the value and
-/// use it again.
-///
-/// # Examples
-///
-/// ```rust
-/// use owned_pin::{opin, unpin};
-///
-/// // Pins the value onto the stack.
-/// let pinned = opin!(String::from("Hello!"));
-/// // Retrieves back the data because `String` is `Unpin`.
-/// let string: String = unpin(pinned);
-/// assert_eq!(string, "Hello!");
-/// ```
-#[macro_export]
-#[allow_internal_unstable(unsafe_pin_internals)]
-macro_rules! opin {
-    ($value:expr) => {
-        $crate::Pin {
-            pointer: $crate::on_stack!($value),
-        }
-    };
-}
-
-/// Pins an uninitialized value onto the current calling stack.
-///
-/// This macro is the shorthand for [`opin!(MaybeUninit::uninit())`](opin);
-/// users can specify the desired type in the arguments of this macro.
-///
-/// To initialize this value, the [`pin_init`](OnStack::pin_init) method should
-/// be used in most cases.
-///
-/// See [`pinned-init`](pinned_init) crate for how to directly initialize a
-/// pinned value.
-#[macro_export]
-macro_rules! opin_uninit {
-    ($($ty:ty)?) => {
-        $crate::opin!($crate::MaybeUninit$(::<$ty>)?::uninit())
-    };
-}
-
-/// Initializes and pins an owned value directly on the stack using an
-/// initializer of [`PinInit`](pinned_init::PinInit).
-///
-/// # Examples
-///
-/// ```rust
-/// use owned_pin::{opin_init, OPin};
-/// use pinned_init::pin_data;
-///
-/// #[pin_data]
-/// struct A {
-///     x: u32
-/// }
-///
-/// opin_init!(let a = A { x: 64 });
-/// assert_eq!(a.x, 64);
-/// ```
-#[macro_export]
-#[cfg(feature = "pinned-init")]
-macro_rules! opin_init {
-    (let $value:tt $(: $ty:ty)? = $init:expr) => {
-        let __uninit = $crate::opin_uninit!($($ty:ty)?);
-        let $value = $crate::OnStack::pin_init(__uninit, $init).unwrap();
-    };
-}
-
-/// Attempts to initialize and pin an owned value directly on the stack using an
-/// initializer of [`PinInit`](pinned_init::PinInit).
-///
-/// # Examples
-///
-/// ```rust
-/// use owned_pin::{try_opin_init, OPin};
-/// use pinned_init::pin_data;
-///
-/// #[pin_data]
-/// struct A {
-///     x: u32
-/// }
-///
-/// try_opin_init!(let a = A { x: 64 });
-/// assert_eq!(a.unwrap().x, 64);
-#[macro_export]
-#[cfg(feature = "pinned-init")]
-macro_rules! try_opin_init {
-    (let $value:tt $(: $ty:ty)? = $init:expr) => {
-        let __uninit = $crate::opin_uninit!($($ty:ty)?);
-        let $value = $crate::OnStack::pin_init(__uninit, $init);
-    };
-}
-
 /// Moves out the underlying pinned value, if it is `Unpin`.
 ///
 /// See the example in the documentation of [`opin`] for more information.
-pub fn unpin<P>(pinned: Pin<P>) -> <P as IntoInner>::Target
+pub fn unpin<P>(pinned: Pin<P>) -> P::Target
 where
     P: Deref + IntoInner,
-    <P as Deref>::Target: Unpin + Sized,
+    P::Target: Unpin + Sized,
 {
     Pin::into_inner(pinned).into_inner()
+}
+
+/// Attempts to move out the underlying pinned value, if it is `Unpin`.
+///
+/// When the underlying pointer fails to unwrap the value, the original pinned
+/// pointer is returned, wrapped in [`Err`].
+///
+/// See the example in the documentation of [`opin`] for more information.
+pub fn try_unpin<P>(pinned: Pin<P>) -> Result<P::Target, Pin<P>>
+where
+    P: Deref + IntoInner,
+    P::Target: Unpin + Sized,
+{
+    P::try_unwrap(Pin::into_inner(pinned)).map_err(Pin::new)
 }
