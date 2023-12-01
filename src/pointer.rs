@@ -4,23 +4,23 @@ use core::{
     error::Error,
     fmt,
     future::Future,
-    hash::Hasher,
+    hash::{Hash, Hasher},
     iter::FusedIterator,
     marker::{PhantomData, Tuple, Unsize},
     mem::{self, ManuallyDrop, MaybeUninit},
     ops::{CoerceUnsized, Coroutine, CoroutineState, Deref, DerefMut, DispatchFromDyn, Receiver},
     panic::UnwindSafe,
     pin::Pin,
-    ptr,
+    ptr::{self, NonNull},
     task::{Context, Poll},
 };
 
 #[cfg(feature = "pinned-init")]
 use pinned_init::{Init, PinInit};
 
-use crate::IntoInner;
 #[cfg(feature = "pinned-init")]
 use crate::OPin;
+use crate::{IntoInner, RawConvertable};
 
 /// A pointer type that uniquely owns its data on the stack. but via the
 /// implementation of a mutable reference to its `ManuallyDrop` wrapped form.
@@ -30,7 +30,6 @@ use crate::OPin;
 /// is directly unreachable.
 ///
 /// See [the module level documentation](crate) for more information.
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct OnStack<'a, T: ?Sized> {
     #[doc(hidden)]
@@ -132,6 +131,36 @@ impl<'a, T: ?Sized> OnStack<'a, T> {
             mem::forget(pointer);
             ret
         }
+    }
+}
+
+// SAFETY: The implementation of `OnStack<T>` is correct.
+unsafe impl<'a, T: ?Sized> RawConvertable for OnStack<'a, T> {
+    type Metadata = ();
+
+    /// Consumes the `OnStack` pointer, returning a wrapped raw pointer, which
+    /// will be properly aligned and non-null.
+    ///
+    /// This function behaves just like `Box::into_raw`, aside from the fact
+    /// that the pointer's lifetime is discarded as well.
+    fn into_raw(this: Self) -> (NonNull<T>, ()) {
+        let ptr = OnStack::into_raw(this);
+        // SAFETY: The pointer to the stack memory is always not-null, whether its
+        // dangling for ZSTs for not.
+        (unsafe { NonNull::new_unchecked(ptr) }, ())
+    }
+
+    /// Constructs an `OnStack` pointer from a raw pointer.
+    ///
+    /// # Safety
+    ///
+    /// Beside the basic requirement stated in
+    /// [`new_unchecked`](OnStack::new_unchecked), the caller must also ensure
+    /// the satisfaction of creating a unique & valid reference from this
+    /// pointer.
+    unsafe fn from_raw(pointer: NonNull<T>, _: ()) -> Self {
+        // SAFETY: The contract is satisfied above.
+        unsafe { OnStack::from_raw(pointer.as_ptr()) }
     }
 }
 
@@ -265,6 +294,35 @@ impl<'a, T: ?Sized> Drop for OnStack<'a, T> {
         // SAFETY: We own this place of memory according to the contract in
         // `new_unchecked` function.
         unsafe { ManuallyDrop::drop(self.inner) }
+    }
+}
+
+impl<T: ?Sized + PartialEq> PartialEq for OnStack<'_, T> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.deref() == other.deref()
+    }
+}
+
+impl<T: ?Sized + Eq> Eq for OnStack<'_, T> {}
+
+impl<T: ?Sized + PartialOrd> PartialOrd for OnStack<'_, T> {
+    #[inline]
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        self.deref().partial_cmp(other)
+    }
+}
+
+impl<T: ?Sized + Ord> Ord for OnStack<'_, T> {
+    #[inline]
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.deref().cmp(other)
+    }
+}
+
+impl<T: ?Sized + Hash> Hash for OnStack<'_, T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.deref().hash(state)
     }
 }
 

@@ -96,8 +96,10 @@
 #![feature(tuple_trait)]
 #![feature(unboxed_closures)]
 #![feature(unsize)]
+#![cfg_attr(feature = "alloc", feature(new_uninit))]
 
 mod pointer;
+pub mod sync;
 
 #[doc(hidden)]
 pub use core::{
@@ -105,7 +107,7 @@ pub use core::{
     mem::{ManuallyDrop, MaybeUninit},
     pin::Pin,
 };
-use core::{ops::Deref, sync::Exclusive};
+use core::{ops::Deref, ptr::NonNull, sync::Exclusive};
 
 pub use self::pointer::OnStack;
 
@@ -118,6 +120,8 @@ pub type OPin<'a, T> = Pin<OnStack<'a, T>>;
 /// Represents a smart pointer whose pointed data can be safely moved out by
 /// [`into_inner`](IntoInner::into_inner).
 ///
+/// Implementing this trait proves the smart pointer owns its pointed data.
+///
 /// This trait doesn't require [`Deref`], because some smart pointers like `Rc`
 /// shares its reference and may returns an option of the underlying data.
 pub trait IntoInner {
@@ -128,11 +132,63 @@ pub trait IntoInner {
     fn into_inner(self) -> Self::Target;
 }
 
+/// Smart pointers that can convert themselves into raw forms, and is able to
+/// convert raw forms back to themselves.
+///
+/// # Safety
+///
+/// The implementor of this trait must enable any valid raw form to be converted
+/// back to its corresponding valid smart pointer.
+pub unsafe trait RawConvertable: Deref {
+    /// The additional metadata needed to be converted back.
+    type Metadata: Sized;
+
+    /// Converts a smart pointer into its raw form.
+    fn into_raw(this: Self) -> (NonNull<Self::Target>, Self::Metadata);
+
+    /// Converts the raw form of a smart pointer back.
+    ///
+    /// # Safety
+    ///
+    /// `pointer` and `metadata` must be the ones that is previously returned
+    /// from the same call of [`into_raw`](RawConvertable::into_raw).
+    unsafe fn from_raw(pointer: NonNull<Self::Target>, metadata: Self::Metadata) -> Self;
+}
+
+/// Smart pointers that can convert their uninitialized forms into initialized
+/// forms.
+///
+/// # Safety
+///
+/// The implementor of this trait must enable any valid uninitialized form to
+/// convert to its corresponding valid initialized form.
+pub unsafe trait Uninit: Deref
+where
+    <Self as Deref>::Target: Sized,
+{
+    type Uninit: Deref<Target = MaybeUninit<Self::Target>>;
+
+    /// Converts to its initialized form.
+    ///
+    /// # Safety
+    ///
+    /// See [`MaybeUninit::assume_init`] for more information.
+    unsafe fn assume_init(this: Self::Uninit) -> Self;
+}
+
 impl<T> IntoInner for ManuallyDrop<T> {
     type Target = T;
 
     fn into_inner(self) -> Self::Target {
         ManuallyDrop::into_inner(self)
+    }
+}
+
+unsafe impl<T> Uninit for ManuallyDrop<T> {
+    type Uninit = ManuallyDrop<MaybeUninit<T>>;
+
+    unsafe fn assume_init(this: Self::Uninit) -> Self {
+        ManuallyDrop::new(unsafe { ManuallyDrop::into_inner(this).assume_init() })
     }
 }
 
@@ -147,9 +203,9 @@ impl<T> IntoInner for Exclusive<T> {
 #[cfg(feature = "alloc")]
 mod alloc2 {
     use alloc::{boxed::Box, rc::Rc, sync::Arc};
-    use core::alloc::Allocator;
+    use core::{alloc::Allocator, mem::MaybeUninit, ptr::NonNull};
 
-    use crate::IntoInner;
+    use crate::{IntoInner, RawConvertable, Uninit};
 
     impl<T, A: Allocator> IntoInner for Box<T, A> {
         type Target = T;
@@ -172,6 +228,89 @@ mod alloc2 {
 
         fn into_inner(self) -> Self::Target {
             Arc::into_inner(self)
+        }
+    }
+
+    // SAFETY: The implementation of `Box`es is correct.
+    unsafe impl<T, A: Allocator> RawConvertable for Box<T, A> {
+        type Metadata = A;
+
+        /// See [`Box::into_raw_with_allocator`] for more information.
+        fn into_raw(this: Self) -> (NonNull<T>, A) {
+            let (ptr, alloc) = Box::into_raw_with_allocator(this);
+            // SAFETY: The pointer to the heap memory is always not-null, whether its
+            // dangling for ZSTs for not.
+            (unsafe { NonNull::new_unchecked(ptr) }, alloc)
+        }
+
+        /// See [`Box::from_raw_in`] for more information.
+        unsafe fn from_raw(pointer: NonNull<T>, metadata: A) -> Self {
+            // SAFETY: The safety requirement is upheld by the caller.
+            unsafe { Box::from_raw_in(pointer.as_ptr(), metadata) }
+        }
+    }
+
+    // SAFETY: The implementation of `Rc`s is correct.
+    unsafe impl<T, A: Allocator + Clone> RawConvertable for Rc<T, A> {
+        type Metadata = A;
+
+        /// See [`Rc::into_raw`] and [`Rc::allocator`] for more information.
+        fn into_raw(this: Self) -> (NonNull<T>, A) {
+            let alloc = Rc::allocator(&this).clone();
+            let ptr = Rc::into_raw(this);
+            // SAFETY: The pointer to the heap memory is always not-null, whether its
+            // dangling for ZSTs for not.
+            (unsafe { NonNull::new_unchecked(ptr.cast_mut()) }, alloc)
+        }
+
+        /// See [`Rc::from_raw_in`] for more information.
+        unsafe fn from_raw(pointer: NonNull<T>, metadata: A) -> Self {
+            // SAFETY: The safety requirement is upheld by the caller.
+            unsafe { Rc::from_raw_in(pointer.as_ptr(), metadata) }
+        }
+    }
+
+    // SAFETY: The implementation of `Rc`s is correct.
+    unsafe impl<T, A: Allocator + Clone> RawConvertable for Arc<T, A> {
+        type Metadata = A;
+
+        /// See [`Rc::into_raw`] and [`Rc::allocator`] for more information.
+        fn into_raw(this: Self) -> (NonNull<T>, A) {
+            let alloc = Arc::allocator(&this).clone();
+            let ptr = Arc::into_raw(this);
+            // SAFETY: The pointer to the heap memory is always not-null, whether its
+            // dangling for ZSTs for not.
+            (unsafe { NonNull::new_unchecked(ptr.cast_mut()) }, alloc)
+        }
+
+        /// See [`Rc::from_raw_in`] for more information.
+        unsafe fn from_raw(pointer: NonNull<T>, metadata: A) -> Self {
+            // SAFETY: The safety requirement is upheld by the caller.
+            unsafe { Arc::from_raw_in(pointer.as_ptr(), metadata) }
+        }
+    }
+
+    unsafe impl<T, A: Allocator> Uninit for Box<T, A> {
+        type Uninit = Box<MaybeUninit<T>, A>;
+
+        unsafe fn assume_init(this: Self::Uninit) -> Self {
+            Box::<MaybeUninit<T>, A>::assume_init(this)
+        }
+    }
+
+    unsafe impl<T, A: Allocator + Clone> Uninit for Rc<T, A> {
+        type Uninit = Rc<MaybeUninit<T>, A>;
+
+        unsafe fn assume_init(this: Self::Uninit) -> Self {
+            Rc::<MaybeUninit<T>, A>::assume_init(this)
+        }
+    }
+
+    unsafe impl<T, A: Allocator + Clone> Uninit for Arc<T, A> {
+        type Uninit = Arc<MaybeUninit<T>, A>;
+
+        unsafe fn assume_init(this: Self::Uninit) -> Self {
+            Arc::<MaybeUninit<T>, A>::assume_init(this)
         }
     }
 }
@@ -235,11 +374,8 @@ macro_rules! on_stack {
 /// ```
 #[macro_export]
 macro_rules! uninit_on_stack {
-    ($ty:ty) => {
-        $crate::on_stack!($crate::MaybeUninit::<$ty>::uninit())
-    };
-    () => {
-        $crate::on_stack!($crate::MaybeUninit::uninit())
+    ($($ty:ty)?) => {
+        $crate::on_stack!($crate::MaybeUninit$(::<$ty>)?::uninit())
     };
 }
 
@@ -310,10 +446,7 @@ macro_rules! try_init_on_stack {
 macro_rules! opin {
     ($value:expr) => {
         $crate::Pin {
-            pointer: $crate::OnStack {
-                inner: &mut $crate::ManuallyDrop::new($value),
-                marker: $crate::PhantomData,
-            },
+            pointer: $crate::on_stack!($value),
         }
     };
 }
@@ -330,11 +463,8 @@ macro_rules! opin {
 /// pinned value.
 #[macro_export]
 macro_rules! opin_uninit {
-    ($ty:ty) => {
-        $crate::opin!($crate::MaybeUninit::<$ty>::uninit())
-    };
-    () => {
-        $crate::opin!($crate::MaybeUninit::uninit())
+    ($($ty:ty)?) => {
+        $crate::opin!($crate::MaybeUninit$(::<$ty>)?::uninit())
     };
 }
 
