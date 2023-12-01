@@ -147,7 +147,6 @@ pub type APin<'a, T> = Pin<Arsc<OnStack<'a, T>>>;
 /// ```rust
 /// # #[cfg(feature = "alloc")]
 /// # {
-///
 /// use owned_pin::sync::{Arsc, ArscExt, RefCount, RefCounted};
 ///
 /// #[derive(RefCounted)]
@@ -168,7 +167,7 @@ pub type APin<'a, T> = Pin<Arsc<OnStack<'a, T>>>;
 /// # }
 /// ```
 ///
-/// Pin it onto the stack using [`apin`]:
+/// Pin a value onto the stack using [`apin`]:
 ///
 /// ```rust
 /// use owned_pin::sync::{Arsc, RefCount, RefCounted, apin};
@@ -351,7 +350,6 @@ where
     /// ```rust
     /// # #[cfg(feature = "alloc")]
     /// # {
-    ///
     /// use owned_pin::sync::{Arsc, ArscExt, RefCount, RefCounted};
     ///
     /// #[derive(RefCounted)]
@@ -383,7 +381,6 @@ where
     /// ```rust
     /// # #[cfg(feature = "alloc")]
     /// # {
-    ///
     /// use owned_pin::sync::{Arsc, ArscExt, RefCount, RefCounted};
     /// use std::pin::Pin;
     ///
@@ -708,7 +705,6 @@ where
     /// ```rust
     /// # #[cfg(feature = "alloc")]
     /// # {
-    ///
     /// use owned_pin::sync::{Arsc, ArscExt, RefCount, RefCounted};
     ///
     /// #[derive(RefCounted)]
