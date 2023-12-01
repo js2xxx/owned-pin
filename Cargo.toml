@@ -20,5 +20,5 @@ default = ["alloc", "pinned-init"]
 pinned-init = ["dep:pinned-init"]
 
 [dependencies]
-owned-pin-macros = {path = "macros"}
+owned-pin-macros = {version = "0.1"}
 pinned-init = {version = "0.0", default-features = false, optional = true}

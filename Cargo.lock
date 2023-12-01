@@ -6,13 +6,23 @@ version = 3
 name = "owned-pin"
 version = "1.2.0"
 dependencies = [
- "owned-pin-macros",
+ "owned-pin-macros 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "pinned-init",
 ]
 
 [[package]]
 name = "owned-pin-macros"
 version = "0.1.0"
+dependencies = [
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "owned-pin-macros"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04baa9a6ed22df3218e706332de62b92a095108de994a1679271146a5cdcddd9"
 dependencies = [
  "quote",
  "syn",
