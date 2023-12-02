@@ -1,7 +1,7 @@
 use std::iter;
 
-use quote::{quote, ToTokens, __private::TokenStream};
-use syn::{punctuated::Punctuated, *};
+use quote::{__private::TokenStream, quote};
+use syn::*;
 
 const MSG_UNION: &str = "`RefCounted` cannot be derived on unions";
 const MSG_ONCE_STRUCT: &str = "`RefCounted` requires exactly one field with `#[count_on]`";
@@ -13,15 +13,15 @@ const MSG_ONCE_VARIANT: &str =
 /// See `RefCounted`'s trait documentation for more information.
 #[proc_macro_derive(RefCounted, attributes(count_on))]
 pub fn derive_ref_counted(ts: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let input = parse_macro_input!(ts as DeriveInput);
-    match input.data {
-        syn::Data::Struct(data) => derive_struct(input.ident, data, MSG_ONCE_STRUCT).into(),
-        syn::Data::Enum(data) => derive_enum(input.ident, data).into(),
-        syn::Data::Union(_) => {
-            let error = Error::new_spanned(input.ident, MSG_UNION);
-            error.to_compile_error().into()
-        }
+    match derive_impl(parse_macro_input!(ts as DeriveInput)) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.to_compile_error().into(),
     }
+}
+
+struct CountOn {
+    ident: IdentOrIndex,
+    ty: Type,
 }
 
 enum IdentOrIndex {
@@ -29,33 +29,23 @@ enum IdentOrIndex {
     Index(usize),
 }
 
-impl IdentOrIndex {
-    fn unwrap_index(self) -> usize {
-        match self {
-            IdentOrIndex::Index(index) => index,
-            IdentOrIndex::Ident(_) => unreachable!(),
-        }
-    }
+fn derive_generics(generics: &mut Generics, ty: &Type) {
+    let pred = parse_quote!(#ty: owned_pin::sync::RefCounted);
+    generics.make_where_clause().predicates.push(pred)
 }
 
-impl ToTokens for IdentOrIndex {
-    fn to_tokens(&self, tokens: &mut TokenStream) {
-        match self {
-            IdentOrIndex::Ident(ident) => ident.to_tokens(tokens),
-            IdentOrIndex::Index(index) => quote!(#index).to_tokens(tokens),
-        }
-    }
-}
-
-fn derive_variant(ident: &Ident, fields: &Fields, msg: &str) -> Result<IdentOrIndex> {
+fn derive_fields(ident: &Ident, fields: Fields, msg: &str) -> Result<CountOn> {
     let pred_a = |attr: &Attribute| matches!(&attr.meta, Meta::Path(p) if p.is_ident("count_on"));
-    let pred_f = |(_, field): &(usize, &Field)| field.attrs.iter().any(pred_a);
+    let pred_f = |(_, field): &(usize, Field)| field.attrs.iter().any(pred_a);
 
-    let fields: Vec<(usize, &Field)> = fields.iter().enumerate().filter(pred_f).collect();
-    match *fields {
-        [(ime, me)] => Ok(match me.ident.clone() {
-            Some(ident) => IdentOrIndex::Ident(ident),
-            None => IdentOrIndex::Index(ime),
+    let fields: Vec<(usize, Field)> = fields.into_iter().enumerate().filter(pred_f).collect();
+    match &*fields {
+        [(ime, me)] => Ok(CountOn {
+            ident: match me.ident.clone() {
+                Some(ident) => IdentOrIndex::Ident(ident),
+                None => IdentOrIndex::Index(*ime),
+            },
+            ty: me.ty.clone(),
         }),
         [] => Err(Error::new_spanned(ident, msg)),
         [_, (_, two), ..] => Err(match &two.ident {
@@ -65,51 +55,58 @@ fn derive_variant(ident: &Ident, fields: &Fields, msg: &str) -> Result<IdentOrIn
     }
 }
 
-fn derive_struct(ident: Ident, data: DataStruct, msg: &str) -> TokenStream {
-    let count_on = match derive_variant(&ident, &data.fields, msg) {
-        Ok(field) => field,
-        Err(err) => return err.to_compile_error(),
-    };
-    quote! {
-        unsafe impl owned_pin::sync::RefCounted for #ident {
-            fn ref_count(&self) -> &owned_pin::sync::RefCount {
-                owned_pin::sync::RefCounted::ref_count(&self. #count_on)
-            }
+fn derive_variant(
+    ident: &Ident,
+    generics: &mut Generics,
+    fields: Fields,
+    msg: &str,
+) -> Result<TokenStream> {
+    let count_on = derive_fields(ident, fields, msg)?;
+    derive_generics(generics, &count_on.ty);
+    match count_on.ident {
+        IdentOrIndex::Ident(fi) => Ok(quote! {
+            #ident { #fi, .. } =>
+            owned_pin::sync::RefCounted::ref_count(#fi)
+        }),
+        IdentOrIndex::Index(index) => {
+            let before = iter::repeat_with(<Token![_]>::default).take(index);
+            Ok(quote! {
+                #ident (#(#before,)* field, ..) =>
+                owned_pin::sync::RefCounted::ref_count(field)
+            })
         }
     }
 }
 
-fn derive_enum(ident: Ident, data: DataEnum) -> TokenStream {
-    let to_tokens = |variant: &Variant| -> Result<TokenStream> {
-        let vi = &variant.ident;
-        let count_on = derive_variant(vi, &variant.fields, MSG_ONCE_VARIANT)?;
-        match &variant.fields {
-            Fields::Named(_) => Ok(quote! {
-                #ident::#vi { #count_on, .. } =>
-                owned_pin::sync::RefCounted::ref_count(#count_on)
-            }),
-            Fields::Unnamed(_) => {
-                let count_on = count_on.unwrap_index();
-                let punc = iter::repeat_with(<Token![_]>::default)
-                    .take(count_on)
-                    .collect::<Punctuated<Token![_], Token![,]>>();
-                Ok(quote! {
-                    #ident::#vi (#punc, field, ..) =>
-                    owned_pin::sync::RefCounted::ref_count(field)
-                })
-            }
-            Fields::Unit => unreachable!(),
-        }
+fn derive_struct(
+    ident: &Ident,
+    generics: &mut Generics,
+    data: DataStruct,
+) -> Result<Vec<TokenStream>> {
+    derive_variant(ident, generics, data.fields, MSG_ONCE_STRUCT).map(|branch| vec![branch])
+}
+
+fn derive_enum(ident: &Ident, generics: &mut Generics, data: DataEnum) -> Result<Vec<TokenStream>> {
+    let to_tokens = |variant: Variant| -> Result<TokenStream> {
+        derive_variant(&variant.ident, generics, variant.fields, MSG_ONCE_VARIANT)
+            .map(|tokens| quote! { #ident:: #tokens })
     };
-    let branches: Vec<TokenStream> = match data.variants.iter().map(to_tokens).collect() {
-        Ok(tokens) => tokens,
-        Err(err) => return err.to_compile_error(),
+    data.variants.into_iter().map(to_tokens).collect()
+}
+
+fn derive_impl(mut input: DeriveInput) -> Result<TokenStream> {
+    let branches = match input.data {
+        syn::Data::Struct(data) => derive_struct(&input.ident, &mut input.generics, data)?,
+        syn::Data::Enum(data) => derive_enum(&input.ident, &mut input.generics, data)?,
+        syn::Data::Union(_) => return Err(Error::new_spanned(input.ident, MSG_UNION)),
     };
-    quote! {
-        unsafe impl owned_pin::sync::RefCounted for #ident {
+    let ident = &input.ident;
+    let (gimpl, gty, gwhere) = input.generics.split_for_impl();
+    Ok(quote! {
+        unsafe impl #gimpl owned_pin::sync::RefCounted for #ident #gty #gwhere {
             fn ref_count(&self) -> &owned_pin::sync::RefCount {
-                match self { #(#branches),* }
+                match self { #(#branches,)* }
             }
         }
-    }
+    })
 }
