@@ -113,8 +113,33 @@ impl Default for RefCount {
 ///
 /// # Safety
 ///
-/// `ref_count` must return a static offset in the memory layout of the
-/// implementor type.
+/// - `ref_count` must return a static offset in the memory layout of the
+///   implementor type.
+/// - Nested implementation is **not** allowed:
+///
+/// ```rust,no_run
+/// use owned_pin::sync::{Arsc, RefCount, RefCounted};
+///
+/// struct Nested<T> {
+///     nest: Arsc<Box<T>>
+/// }
+///
+/// // This implementation will cause an undefined
+/// // behavior (a double free on drop).
+/// unsafe<T: RefCounted> impl RefCounted for Nested<T> {
+///     fn ref_count(&self) -> &RefCount {
+///         &**self.nest
+///     }
+/// }
+///
+/// // The derive macro will generate a compile error
+/// // on both struct and enum derivations.
+/// #[derive(RefCounted)]
+/// struct NestedUsingDerive {
+///     #[count_on]
+///     nest: Arsc<Box<RefCount>>,
+/// }
+/// ```
 pub unsafe trait RefCounted {
     /// Gets the reference counter stored within this type.
     fn ref_count(&self) -> &RefCount;
