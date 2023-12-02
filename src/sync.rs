@@ -117,16 +117,16 @@ impl Default for RefCount {
 ///   implementor type.
 /// - Nested implementation is **not** allowed:
 ///
-/// ```rust,no_run
+/// ```rust,ignore
 /// use owned_pin::sync::{Arsc, RefCount, RefCounted};
 ///
-/// struct Nested<T> {
+/// struct Nested<T: RefCounted> {
 ///     nest: Arsc<Box<T>>
 /// }
 ///
 /// // This implementation will cause an undefined
 /// // behavior (a double free on drop).
-/// unsafe<T: RefCounted> impl RefCounted for Nested<T> {
+/// unsafe impl<T: RefCounted> RefCounted for Nested<T> {
 ///     fn ref_count(&self) -> &RefCount {
 ///         &**self.nest
 ///     }
