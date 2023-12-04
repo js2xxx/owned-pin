@@ -74,13 +74,12 @@
 //!
 //! # Relationship with R-value references in C++
 //!
-//! This crate is in fact inspired by R-value references in C++, and `OPin<T>`
-//! behaves more similar to R-value references than the original move semantics
-//! in Rust and the `Pin<&mut T>` wrapper. However, there is still no "default
-//! value" left when some data is `OPin`ned or moved out, guaranteeing the
-//! memory safety requirements of Rust.
+//! This crate is inspired by R-value references in C++, and `OPin<T>` behaves
+//! more similarly to R-value references than the original move semantics in
+//! Rust and the `Pin<&mut T>` wrapper.
 //!
-//! The more detailed comparison is yet to be discussed.
+//! To obtain a more comprehensive comparison between those two, see
+//! [Github](https://github.com/js2xxx/owned-pin).
 //!
 //! # Utilities
 //!
